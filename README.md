@@ -4,7 +4,7 @@
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.1%2B-41BDF5?logo=home-assistant)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-stable-success.svg)
-![Codeberg](https://img.shields.io/badge/hosted%20on-Codeberg-orange?logo=codeberg)
+![GitHub](https://img.shields.io/badge/hosted%20on-GitHub-black?logo=github)
 
 Integración **no oficial** para conectar el **portal Vivit Energy (Repsol Luz y Gas)** con **Home Assistant**.  
 Permite consultar consumos, costes, facturas y batería virtual directamente desde tu cuenta del área cliente Repsol.
@@ -32,8 +32,8 @@ Permite consultar consumos, costes, facturas y batería virtual directamente des
 
 ### 🔹 Opción 1 — Manual (descarga directa)
 
-1. Descarga el repositorio desde Codeberg:  
-   [https://codeberg.org/s3rp1/Vivit-energy-ha](https://codeberg.org/s3rp1/vivit-energy-ha)
+1. Descarga el repositorio desde GitHub:  
+   [https://github.com/dmigut00/vivit-energy-ha](https://github.com/dmigut00/vivit-energy-ha)
 
 2. Copia la carpeta `repsol_vivit` dentro de:
 
@@ -58,7 +58,7 @@ rm -rf /config/custom_components/repsol_vivit
 
 # 2) Clona temporalmente el repositorio
 cd /config
-git clone --depth=1 https://codeberg.org/s3rp1/vivit-energy-ha.git .vivit-tmp
+git clone --depth=1 https://github.com/dmigut00/vivit-energy-ha.git .vivit-tmp
 
 # 3) Copia SOLO la integración
 cp -r .vivit-tmp/custom_components/repsol_vivit /config/custom_components/
@@ -86,7 +86,7 @@ rm -rf /config/custom_components/repsol_vivit
 
 # 2) Clona la nueva versión
 cd /config
-git clone --depth=1 https://codeberg.org/s3rp1/vivit-energy-ha.git .vivit-tmp
+git clone --depth=1 https://github.com/dmigut00/vivit-energy-ha.git .vivit-tmp
 
 # 3) Copia la integración actualizada
 cp -r .vivit-tmp/custom_components/repsol_vivit /config/custom_components/
@@ -136,10 +136,10 @@ rm -rf /config/.vivit-tmp
 
 ## 🧑‍💻 Desarrollador
 
-- **Autor:** [@s3rp1](https://codeberg.org/s3rp1)  
-- **Versión:** 1.1.0 (primer lanzamiento estable)  
+- **Autor:** [@dmigut00](https://github.com/dmigut00)  
+- **Versión:** 1.1.0 (primer lanzamiento estable en GitHub)  
 - **Tipo:** Integración personalizada no oficial  
-- **Licencia:** MIT
+- **Licencia:** [MIT](./LICENSE)
 
 ---
 
