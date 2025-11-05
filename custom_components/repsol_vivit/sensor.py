@@ -12,8 +12,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, LOGGER
 
-# Nombres LIMPIOS para sensores (sin “Contrato N”)
+# Sensores base (nombres LIMPIOS; el nombre del dispositivo es quien lleva "Contrato N (…)").
 SENSOR_DEFS = [
+    # Comunes
     {"name": "Consumo", "var": "consumption", "class": SensorDeviceClass.ENERGY},
     {"name": "Días totales", "var": "totalDays", "class": None},
     {"name": "Estado contrato", "var": "status", "class": None},
@@ -26,13 +27,20 @@ SENSOR_DEFS = [
     {"name": "Próxima factura", "var": "nextInvoiceAmount", "class": SensorDeviceClass.MONETARY},
     {"name": "Variable próxima factura", "var": "nextInvoiceVariableAmount", "class": SensorDeviceClass.MONETARY},
     {"name": "Fijo próxima factura", "var": "nextInvoiceFixedAmount", "class": SensorDeviceClass.MONETARY},
+
+    # Solo electricidad
     {"name": "Potencia contratada", "var": "power", "class": SensorDeviceClass.POWER},
     {"name": "Tarifa", "var": "fee", "class": None},
     {"name": "Precio potencia punta", "var": "pricesPowerPunta", "class": SensorDeviceClass.MONETARY},
     {"name": "Precio potencia valle", "var": "pricesPowerValle", "class": SensorDeviceClass.MONETARY},
     {"name": "Precio energía", "var": "pricesEnergyAmount", "class": SensorDeviceClass.MONETARY},
+
+    # Solo gas
+    {"name": "Término fijo gas", "var": "fixedTerm", "class": SensorDeviceClass.MONETARY},
+    {"name": "Término variable gas", "var": "variableTerm", "class": SensorDeviceClass.MONETARY},
 ]
 
+# Sensores de batería virtual (solo electricidad y solo si hay datos)
 VB_DEFS = [
     {"name": "Batería virtual — € pendientes", "var": "pendingAmount", "class": SensorDeviceClass.MONETARY},
     {"name": "Batería virtual — kWh disponibles", "var": "kwhAvailable", "class": SensorDeviceClass.ENERGY},
@@ -44,55 +52,99 @@ VB_DEFS = [
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
+    """Crea sensores a partir del coordinator."""
     stored = hass.data[DOMAIN][entry.entry_id]
     coordinator = stored["coordinator"]
-    contract_id = stored["contract_id"]
-    contract_type = stored["contract_type"]
-    device_name = stored["device_name"]  # “Contrato N (Electricidad)”
+
+    # En nuestra rama actual, __init__.py guarda estos campos por entrada:
+    # - contract_id, contract_type, device_name
+    # Si no existieran (retrocompat), hacemos fallback a crear para todos.
+    contract_id = stored.get("contract_id")
+    contract_type = stored.get("contract_type")
+    device_name = stored.get("device_name")
 
     data: Dict[str, Dict[str, Any]] = coordinator.data or {}
-    payload = data.get(contract_id)
-    if not payload:
-        LOGGER.error("No payload for contract_id %s", contract_id)
+    entities: List[SensorEntity] = []
+
+    if contract_id and contract_id in data:
+        # Creación modo 1-contrato (preferido)
+        entities.extend(_build_contract_entities(data, contract_id, device_name, contract_type, coordinator))
+    else:
+        # Fallback: crear para todos los contratos del payload
+        for cid in list(data.keys()):
+            payload = data.get(cid) or {}
+            cinfo = payload.get("contracts") or {}
+            ctype = (cinfo.get("contractType") or "ELECTRICITY").upper()
+            dev_name = f"Contrato (Auto) ({'Electricidad' if ctype == 'ELECTRICITY' else 'Gas'})"
+            entities.extend(_build_contract_entities(data, cid, dev_name, ctype, coordinator))
+
+    if not entities:
+        LOGGER.error("No se han podido crear entidades: datos insuficientes.")
         return
 
+    async_add_entities(entities, True)
+    LOGGER.info("Añadidas %s entidades de sensor", len(entities))
+
+
+def _build_contract_entities(
+    full_data: Dict[str, Dict[str, Any]],
+    contract_id: str,
+    device_name: str,
+    contract_type: str | None,
+    coordinator,
+) -> List[SensorEntity]:
+    """Construye todas las entidades para un contrato."""
+    entities: List[SensorEntity] = []
+
+    payload = full_data.get(contract_id) or {}
     cinfo = payload.get("contracts") or {}
     cups = cinfo.get("cups") or contract_id
     house_id = cinfo.get("house_id")
+
     house_data = payload.get("house_data") or {}
     house_contracts = house_data.get("contracts") or []
     house_contract = next((c for c in house_contracts if c.get("code") == contract_id), {})
 
-    entities: List[SensorEntity] = []
+    ctype = (contract_type or cinfo.get("contractType") or "ELECTRICITY").upper()
 
-    # Sensores “core”
+    device = DeviceInfo(
+        identifiers={(DOMAIN, f"{house_id}_{contract_id}")},
+        name=device_name,  # p.ej. "Contrato 2 (Electricidad)"
+        manufacturer="Vivit Energy (unofficial)",
+        model=("Electricidad" if ctype == "ELECTRICITY" else "Gas"),
+        serial_number=str(contract_id),
+        configuration_url="https://areacliente.repsol.es/productos-y-servicios",
+    )
+
+    # Sensores base
     for sd in SENSOR_DEFS:
-        # Para GAS filtramos los que aplican (reutilizamos tu criterio: potencia/tarifa/precios solo electricidad)
-        if contract_type == "GAS" and sd["var"] in {
-            "power", "fee", "pricesPowerPunta", "pricesPowerValle", "pricesEnergyAmount"
-        }:
-            continue
+        var = sd["var"]
+        # Filtro tipo
+        if ctype == "ELECTRICITY" and var in {"fixedTerm", "variableTerm"}:
+            pass  # OK (no los creamos para electricidad)
+        elif ctype == "GAS" and var in {"power", "fee", "pricesPowerPunta", "pricesPowerValle", "pricesEnergyAmount"}:
+            continue  # no aplican a gas
 
         entities.append(
             VivitSensor(
                 coordinator=coordinator,
-                name=sd["name"],            # nombre limpio
-                variable=sd["var"],
+                name=sd["name"],
+                variable=var,
                 device_class=sd["class"],
-                device_name=device_name,    # nombre del dispositivo
+                device=device,
                 house_id=house_id,
                 contract_id=contract_id,
-                contract_type=contract_type,
+                contract_type=ctype,
                 cups=cups,
                 contract_info=cinfo,
                 house_contract=house_contract,
             )
         )
 
-    # Batería virtual (solo electricidad)
-    if contract_type == "ELECTRICITY":
-        vb = payload.get("virtual_battery_history")
-        if vb:
+    # Batería virtual (solo electricidad) si hay datos
+    if ctype == "ELECTRICITY":
+        vb = payload.get("virtual_battery_history") or {}
+        if vb and any(vb.values()):
             for sd in VB_DEFS:
                 entities.append(
                     VivitVBSensor(
@@ -100,15 +152,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         name=sd["name"],
                         variable=sd["var"],
                         device_class=sd["class"],
-                        device_name=device_name,
+                        device=device,
                         house_id=house_id,
                         contract_id=contract_id,
-                        vb_data=vb,
                     )
                 )
-
             # Último canje (si existe)
-            last_red = max((vb.get("discounts", {}) or {}).get("data", []), key=lambda x: x.get("billingDate", ""), default=None)
+            last_red = max((vb.get("discounts", {}) or {}).get("data", []),
+                           key=lambda x: x.get("billingDate", ""), default=None)
             if last_red:
                 entities.append(
                     VivitVBSensor(
@@ -116,7 +167,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         name="Batería virtual — último importe canjeado",
                         variable="amount",
                         device_class=SensorDeviceClass.MONETARY,
-                        device_name=device_name,
+                        device=device,
                         house_id=house_id,
                         contract_id=contract_id,
                         coupon_data=last_red,
@@ -128,17 +179,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         name="Batería virtual — últimos kWh canjeados",
                         variable="kWh",
                         device_class=SensorDeviceClass.ENERGY,
-                        device_name=device_name,
+                        device=device,
                         house_id=house_id,
                         contract_id=contract_id,
                         coupon_data=last_red,
                     )
                 )
 
-    async_add_entities(entities, True)
+    return entities
 
 
 class VivitBase(CoordinatorEntity, SensorEntity):
+    """Base común para sensores Vivit."""
+
     _attr_has_entity_name = False
 
     def __init__(
@@ -147,15 +200,15 @@ class VivitBase(CoordinatorEntity, SensorEntity):
         name: str,
         variable: str,
         device_class: Optional[SensorDeviceClass],
-        device_name: str,
+        device: DeviceInfo,
         house_id: str,
         contract_id: str,
     ):
         super().__init__(coordinator)
-        self._attr_name = name                  # nombre visible del sensor (limpio)
+        self._attr_name = name            # nombre visible del sensor (limpio)
         self.variable = variable
         self._attr_device_class = device_class
-        self.device_name = device_name          # nombre del dispositivo
+        self._device = device
         self.house_id = house_id
         self.contract_id = contract_id
 
@@ -165,13 +218,7 @@ class VivitBase(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.house_id}_{self.contract_id}")},
-            name=self.device_name,  # p.ej. "Contrato 2 (Electricidad)"
-            manufacturer="Vivit Energy (unofficial)",
-            model="Portal",
-            serial_number=str(self.contract_id),
-        )
+        return self._device
 
     @property
     def native_unit_of_measurement(self) -> Optional[str]:
@@ -189,13 +236,15 @@ class VivitBase(CoordinatorEntity, SensorEntity):
 
 
 class VivitSensor(VivitBase):
+    """Sensor principal (costes/estado/facturas/precios)."""
+
     def __init__(
         self,
         coordinator,
         name: str,
         variable: str,
         device_class: Optional[SensorDeviceClass],
-        device_name: str,
+        device: DeviceInfo,
         house_id: str,
         contract_id: str,
         contract_type: str,
@@ -203,7 +252,7 @@ class VivitSensor(VivitBase):
         contract_info: Dict[str, Any],
         house_contract: Dict[str, Any],
     ):
-        super().__init__(coordinator, name, variable, device_class, device_name, house_id, contract_id)
+        super().__init__(coordinator, name, variable, device_class, device, house_id, contract_id)
         self.contract_type = contract_type
         self.cups = cups
         self.contract_info = contract_info or {}
@@ -213,11 +262,11 @@ class VivitSensor(VivitBase):
     def native_value(self) -> Any:
         data = (self.coordinator.data or {}).get(self.contract_id) or {}
 
-        # Costes
+        # COSTES
         if self.variable in {"amount", "consumption", "totalDays", "amountVariable", "amountFixed", "averageAmount"}:
             return (data.get("costs") or {}).get(self.variable)
 
-        # Última factura
+        # ÚLTIMA FACTURA
         if self.variable in {"lastInvoiceAmount", "lastInvoicePaid"}:
             inv = data.get("invoices")
             obj = None
@@ -226,21 +275,22 @@ class VivitSensor(VivitBase):
             elif isinstance(inv, dict):
                 obj = inv
             if not obj:
-                return None
+                return None if self.variable == "lastInvoiceAmount" else "No"
             if self.variable == "lastInvoiceAmount":
                 return obj.get("amount") or obj.get("totalAmount")
             return "Yes" if (obj.get("status") == "PAID") else "No"
 
-        # Próxima factura
+        # PRÓXIMA FACTURA
         if self.variable in {"nextInvoiceAmount", "nextInvoiceVariableAmount", "nextInvoiceFixedAmount"}:
             nxt = data.get("nextInvoice") or {}
-            return {
-                "nextInvoiceAmount": nxt.get("amount"),
-                "nextInvoiceVariableAmount": nxt.get("amountVariable"),
-                "nextInvoiceFixedAmount": nxt.get("amountFixed"),
-            }.get(self.variable)
+            if self.variable == "nextInvoiceAmount":
+                return nxt.get("amount")
+            if self.variable == "nextInvoiceVariableAmount":
+                return nxt.get("amountVariable")
+            if self.variable == "nextInvoiceFixedAmount":
+                return nxt.get("amountFixed")
 
-        # Datos de contrato/tarifa
+        # CAMPOS DE CONTRATO / PRECIOS
         if self.contract_type == "ELECTRICITY":
             if self.variable in {"status", "power", "fee"}:
                 return self.house_contract.get(self.variable) or self.contract_info.get(self.variable)
@@ -253,32 +303,45 @@ class VivitSensor(VivitBase):
             if self.variable == "pricesEnergyAmount":
                 return _parse_price_list((prices.get("energy") or []), 0)
 
+        if self.contract_type == "GAS":
+            if self.variable in {"fixedTerm", "variableTerm", "status"}:
+                # status desde house_contract o contract_info
+                if self.variable == "status":
+                    return self.house_contract.get("status") or self.contract_info.get("status")
+                energy_prices = (self.house_contract.get("prices") or {}).get("energy") or []
+                if self.variable == "fixedTerm":
+                    return _extract_gas_price(energy_prices, fixed=True)
+                if self.variable == "variableTerm":
+                    return _extract_gas_price(energy_prices, fixed=False)
+
         return None
 
 
 class VivitVBSensor(VivitBase):
+    """Sensores de Batería Virtual."""
+
     def __init__(
         self,
         coordinator,
         name: str,
         variable: str,
         device_class: Optional[SensorDeviceClass],
-        device_name: str,
+        device: DeviceInfo,
         house_id: str,
         contract_id: str,
-        vb_data: Optional[Dict[str, Any]] = None,
         coupon_data: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(coordinator, name, variable, device_class, device_name, house_id, contract_id)
-        self.vb_data = vb_data or {}
+        super().__init__(coordinator, name, variable, device_class, device, house_id, contract_id)
         self.coupon_data = coupon_data
 
     @property
     def native_value(self) -> Any:
+        # Si es un sensor “coupon” (último canje), leemos de ese snapshot
         if self.coupon_data:
             return self.coupon_data.get(self.variable)
 
-        vb = self.vb_data
+        data = (self.coordinator.data or {}).get(self.contract_id) or {}
+        vb = data.get("virtual_battery_history") or {}
         discounts = vb.get("discounts") or {}
         excedents = vb.get("excedents") or {}
 
@@ -318,10 +381,30 @@ class VivitVBSensor(VivitBase):
 
 
 def _parse_price_list(prices: List[str], index: int) -> Any:
-    """Extrae 0,1234 de strings y retorna como '0.1234'."""
+    """
+    Extrae números tipo '0,1234' o '0.1234' de una lista de strings y devuelve float.
+    Ej: ["Punta: 0,1234 €/kWh", "Valle: 0,0987 €/kWh"] -> 0.1234 (index=0)
+    """
     parsed: List[str] = []
     for p in prices:
-        m = re.search(r"(\d+,\d+)", str(p))
+        m = re.search(r"(\d+,\d+|\d+\.\d+)", str(p))
         if m:
             parsed.append(m.group(1).replace(",", "."))
-    return parsed[index] if index < len(parsed) else None
+    try:
+        return float(parsed[index])
+    except Exception:
+        return None
+
+
+def _extract_gas_price(prices: List[str], fixed: bool) -> Any:
+    """Busca 'Término Fijo' o 'Término Variable' y devuelve float."""
+    key = "Término Fijo" if fixed else "Término Variable"
+    for p in prices:
+        if key in str(p):
+            m = re.search(r"(\d+,\d+|\d+\.\d+)", str(p))
+            if m:
+                try:
+                    return float(m.group(1).replace(",", "."))
+                except Exception:
+                    return None
+    return None
